@@ -27,7 +27,7 @@ def get_user_input(prompt):
 parser = argparse.ArgumentParser(description="Run a static code scan using scansuite_cli.")
 parser.add_argument("-s", "--server_url", type=str, help="Target server URL")
 parser.add_argument("-u", "--username", type=str, help="ScanSuite user")
-parser.add_argument("-p", "--password", type=str, help="ScanSuite passw")
+parser.add_argument("-p", "--password", type=str, help="ScanSuite password")
 parser.add_argument("-l", "--lang", type=str, help="Programming language of the scan")
 parser.add_argument("-g", "--giturl", type=str, help="Git repository URL to be scanned")
 parser.add_argument(
