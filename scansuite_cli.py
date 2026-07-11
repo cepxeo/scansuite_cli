@@ -1,0 +1,379 @@
+import requests
+import re
+
+requests.packages.urllib3.disable_warnings(requests.packages.urllib3.exceptions.InsecureRequestWarning)
+
+SAST_SCANNER_IDS = frozenset({
+    "sast_quick",
+    "sast_full",
+    "sast_custom",
+    "mlsast",
+    "secrets",
+    "snyk",
+    "dep_checks",
+    "iacs_kics",
+    "gen_docs",
+    "code_flow",
+    "python",
+    "java",
+    "csharp",
+    "cpp",
+    "php",
+    "javascript",
+    "typescript",
+    "ruby",
+    "go",
+    "kotlin",
+    "swift",
+})
+
+SAST_SCANNER_OPTION_FIELDS = frozenset({
+    "mlsast_git_history",
+    "mlsast_reachability",
+    "mlsast_security_architecture",
+    "secrets_ai",
+    "dep_checks_ai",
+})
+
+SAST_SCANNER_FIELDS = (
+    SAST_SCANNER_IDS
+    | SAST_SCANNER_OPTION_FIELDS
+    | {f"dojo_{scanner_id}" for scanner_id in SAST_SCANNER_IDS}
+)
+
+SAST_OPTION_PARENTS = {
+    "mlsast_git_history": "mlsast",
+    "mlsast_reachability": "mlsast",
+    "mlsast_security_architecture": "mlsast",
+    "secrets_ai": "secrets",
+    "dep_checks_ai": "dep_checks",
+}
+
+ENABLED_SCANNER_VALUES = {True, 1, "1", "on", "true", "yes", "enabled"}
+DISABLED_SCANNER_VALUES = {False, 0, None, "", "0", "off", "false", "no", "disabled"}
+
+
+def normalize_sast_scanners(scanners):
+    """Convert selected SAST scanners to the checkbox fields expected by /static."""
+    if not isinstance(scanners, dict):
+        raise ValueError("SAST scanners must be provided as a field-to-enabled-value mapping")
+
+    unknown_fields = set(scanners) - SAST_SCANNER_FIELDS
+    if unknown_fields:
+        raise ValueError(
+            "Unknown SAST scanner field(s): " + ", ".join(sorted(unknown_fields))
+        )
+
+    normalized = {}
+    for field_name, raw_value in scanners.items():
+        value = raw_value.strip().lower() if isinstance(raw_value, str) else raw_value
+        if value in ENABLED_SCANNER_VALUES:
+            normalized[field_name] = "on"
+        elif value not in DISABLED_SCANNER_VALUES:
+            raise ValueError(
+                f"Invalid enabled value for SAST scanner field '{field_name}': {raw_value!r}"
+            )
+
+    for option_field, parent_scanner in SAST_OPTION_PARENTS.items():
+        parent_selected = (
+            parent_scanner in normalized
+            or f"dojo_{parent_scanner}" in normalized
+        )
+        if option_field in normalized and not parent_selected:
+            raise ValueError(
+                f"SAST option '{option_field}' requires scanner '{parent_scanner}'"
+            )
+
+    selected_scanners = SAST_SCANNER_IDS.intersection(normalized)
+    selected_dojo_scanners = {
+        field_name.removeprefix("dojo_")
+        for field_name in normalized
+        if field_name.startswith("dojo_")
+    }
+    if not selected_scanners and not selected_dojo_scanners:
+        raise ValueError("At least one SAST scanner must be enabled")
+
+    return normalized
+
+def fetch_session_and_csrf(url):
+    login_path = "/log_in"
+    login_url = url + login_path
+
+    # Step 1: Make the first request
+    response1 = requests.get(login_url, verify=False)
+
+    # Extract the "session" cookie from the response headers
+    session_cookie1 = response1.cookies.get("session")
+    if not session_cookie1:
+        raise ValueError("Session cookie not found in the first response.")
+
+    # Step 2: Make the second request with the session cookie
+    cookies = {"session": session_cookie1}
+    response2 = requests.get(login_url, cookies=cookies, verify=False)
+
+    # Extract the new "session" cookie from the response headers
+    session_cookie2 = response2.cookies.get("session")
+    if not session_cookie2:
+        raise ValueError("Session cookie not found in the second response.")
+
+    # Extract the CSRF token from the response body
+    csrf_token_match = re.search(
+        r'<input[^>]*id="csrf_token"[^>]*value="([^"]+)"', response2.text
+    )
+    if not csrf_token_match:
+        raise ValueError("CSRF token not found in the response body.")
+
+    csrf_token = csrf_token_match.group(1)
+
+    return session_cookie2, csrf_token
+
+def login(url, username, password):
+
+    session_cookie, csrf_token = fetch_session_and_csrf(url)
+
+    login_path = "/log_in"
+    login_url = url + login_path
+
+    # Prepare POST data
+    data = {
+        "csrf_token": csrf_token,
+        "username": username,
+        "password": password,
+        "login": ""
+    }
+
+    # Prepare cookies
+    cookies = {"session": session_cookie}
+
+    # Make the POST request
+    response = requests.post(login_url, data=data, cookies=cookies, verify=False, allow_redirects=False)
+    if response.status_code == 302:
+        session_cookie3 = response.cookies.get("session")
+        if session_cookie3:
+            return session_cookie3
+        else:
+            print("Session cookie not found in the 302 response")
+            print(response.headers)
+    else:
+        print(f"Unexpected response status code: {response.status_code}")
+        print(response.headers)
+
+    return False
+
+def create_product(url, session_cookie, product_name):
+    product_path = "/product"
+    product_url = url + product_path
+
+    # Prepare POST data
+    data = {"prodname": product_name}
+
+    # Prepare cookies
+    cookies = {"session": session_cookie}
+
+    # Make the POST request
+    response = requests.post(product_url, data=data, cookies=cookies, verify=False)
+
+    if response.status_code == 200:
+        return response.text
+    else:
+        print(f"Product request failed with status code {response.status_code}.")
+        print(response.headers)
+        print(response.text)
+        return False
+
+def static_scan_url(
+    url,
+    session_cookie,
+    giturl,
+    lang,
+    engid,
+    scanners_list,
+    branch_name="",
+    frequency="Once",
+    scan_id="New",
+    repository_url="",
+):
+    static_path = "/static"
+    static_url = url + static_path
+
+    # Keep these fields in sync with buildFormData() in the SAST page.
+    params = {
+        "lang": lang,
+        "engid": engid,
+        "giturl": giturl,
+        "frequency": frequency,
+        "branch_name": branch_name,
+        "repository_url": repository_url,
+        "scan_id": scan_id,
+    }
+    scanner_fields = normalize_sast_scanners(scanners_list)
+    data = {**params, **scanner_fields}
+
+    # Prepare cookies
+    cookies = {"session": session_cookie}
+
+    # Make the POST request
+    response = requests.post(static_url, data=data, cookies=cookies, verify=False)
+
+    if response.status_code == 200:
+        print(f"Submitted {giturl}: {response.status_code} - {response.text}")
+        return response.text
+    else:
+        print(f"Static request failed with status code {response.status_code}.")
+        print("Headers:")
+        print(response.headers)
+        print("Body:")
+        print(response.text)
+        return False
+
+def extract_engagement_id(product_response):
+    """Return the engagement ID from either supported /product response format."""
+    response_value = str(product_response or "").strip()
+    if not response_value:
+        return ""
+
+    if "," not in response_value:
+        return response_value
+
+    _, engagement_id = response_value.split(",", 1)
+    return engagement_id.strip()
+
+def extract_file_name(file_path):
+    # Linux path
+    if "/" in file_path:
+        file_name = file_path.split("/")[-1]
+    # Windows path
+    elif "\\" in file_path:
+        file_name = file_path.split("\\")[-1]
+    # File is in the current folder
+    else:
+        file_name = file_path
+    return file_name
+
+def static_scan_file(url, session_cookie, lang, engid, file_path, scanners_list):
+    file_name = extract_file_name(file_path)
+
+    static_path = "/static"
+    static_url = url + static_path
+
+    cookies = {"session": session_cookie}
+
+    # Form data fields
+    params = {
+        "lang": lang,
+        "engid": engid,
+        "giturl": "",
+        "frequency": "Once",
+        "branch_name": "main",
+        "scan_id": "New",
+    }
+    data = {**params, **scanners_list}
+
+    try:
+        # Read the .zip file as binary data
+        with open(file_path, "rb") as file:
+            files = {"file": (file_name, file, "application/x-zip-compressed")}
+
+            # Send the POST request with form data
+            response = requests.post(static_url, files=files, data=data, cookies=cookies, verify=False)
+
+            if response.status_code == 200:
+                print(f"Uploaded {file_name}: {response.status_code} - {response.text}")
+                return response.text
+            else:
+                print(f"Static request failed with status code {response.status_code}.")
+                print(response.headers)
+                return False
+
+    except Exception as e:
+        print(f"Failed to upload {file_name}: {e}")
+
+def dynamic_scan(url, session_cookie, targets, engid, auth_cookie, auth_header, web_scanners):
+    path = "/dynamic"
+    url = url + path
+
+    # Prepare POST data
+    params = {
+        "scan_id": "New",
+        "targets": targets,
+        "engid": engid,
+        "cookie": auth_cookie,
+        "frequency": "Once",
+        "scan_date": "",
+        "scan_time": "",
+        "run_or_save": "Run now",
+        "header": auth_header
+    }
+
+    data = {**params, **web_scanners}
+
+    # Prepare cookies
+    cookies = {"session": session_cookie}
+
+    # Make the POST request
+    response = requests.post(url, json=data, cookies=cookies, verify=False)
+
+    if response.status_code == 200:
+        print("Dynamic scan started.")
+        return response.text
+    else:
+        print(f"Dynamic scan request failed with status code {response.status_code}.")
+        print(response.headers)
+        #print(response.text)
+        return False
+
+def infra_scan(url, session_cookie, targets, engid, ping, ports, scan_type, scanners):
+    path = "/infrastructure"
+    url = url + path
+
+    # Prepare POST data
+    params = {
+        "scan_id": "New",
+        "targets": targets,
+        "engid": engid,
+        "frequency": "Once",
+        "scan_date": "",
+        "scan_time": "",
+        "run_or_save": "Run now",
+        "ping": ping,
+        "ports": ports,
+        "scan_type": scan_type
+    }
+
+    if scanners:
+        data = {**params, **scanners}
+    else:
+        data = params
+
+    # Prepare cookies
+    cookies = {"session": session_cookie}
+
+    # Make the POST request
+    response = requests.post(url, json=data, cookies=cookies, verify=False)
+
+    if response.status_code == 200:
+        print("Infrastructure scan started.")
+        return response.text
+    else:
+        print(f"Infrastructure scan request failed with status code {response.status_code}.")
+        print(response.headers)
+        #print(response.text)
+        return False
+
+def get_scan_status(url, session_cookie, scanid):
+    login_path = "/history"
+    login_url = url + login_path
+    params = {"actualId": scanid}
+
+    cookies = {"session": session_cookie}
+
+    response = requests.get(login_url, cookies=cookies, params=params, verify=False)
+
+    if response.status_code == 200:
+        return response.text
+
+    else:
+        print(f"Getting scan status failed with status code {response.status_code}.")
+        print(response.headers)
+        #print(response.text)
+        return False
