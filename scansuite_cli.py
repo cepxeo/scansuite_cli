@@ -192,6 +192,7 @@ def static_scan_url(
     frequency="Once",
     scan_id="New",
     repository_url="",
+    scope_patterns="",
 ):
     static_path = "/static"
     static_url = url + static_path
@@ -204,6 +205,7 @@ def static_scan_url(
         "frequency": frequency,
         "branch_name": branch_name,
         "repository_url": repository_url,
+        "scope_patterns": scope_patterns,
         "scan_id": scan_id,
     }
     scanner_fields = normalize_sast_scanners(scanners_list)
@@ -250,7 +252,18 @@ def extract_file_name(file_path):
         file_name = file_path
     return file_name
 
-def static_scan_file(url, session_cookie, lang, engid, file_path, scanners_list):
+def static_scan_file(
+    url,
+    session_cookie,
+    lang,
+    engid,
+    file_path,
+    scanners_list,
+    frequency="Once",
+    scan_id="New",
+    repository_url="",
+    scope_patterns="",
+):
     file_name = extract_file_name(file_path)
 
     static_path = "/static"
@@ -263,11 +276,13 @@ def static_scan_file(url, session_cookie, lang, engid, file_path, scanners_list)
         "lang": lang,
         "engid": engid,
         "giturl": "",
-        "frequency": "Once",
-        "branch_name": "main",
-        "scan_id": "New",
+        "frequency": frequency,
+        "branch_name": "",
+        "repository_url": repository_url,
+        "scope_patterns": scope_patterns,
+        "scan_id": scan_id,
     }
-    data = {**params, **scanners_list}
+    data = {**params, **normalize_sast_scanners(scanners_list)}
 
     try:
         # Read the .zip file as binary data
