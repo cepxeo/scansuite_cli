@@ -220,6 +220,9 @@ def static_scan_url(
     if response.status_code == 200:
         print(f"Submitted {giturl}: {response.status_code} - {response.text}")
         return response.text
+    elif response.status_code == 409:
+        print(f"Scan not started: {response.text}")
+        return False
     else:
         print(f"Static request failed with status code {response.status_code}.")
         print("Headers:")

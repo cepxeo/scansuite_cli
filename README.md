@@ -25,7 +25,7 @@ python scansuite-scan-zip.py \
   -u user \
   -l java \
   -f /path/to/test.zip \
-  --engagement-id local-0123456789ab
+  --engagement-id local-0123456789ac
 ```
 
 Run a Custom Scope scan against selected files in the archive:
@@ -92,6 +92,12 @@ repository name, or the value supplied through `--product-name`. It prints the
 resolved engagement ID; save and reuse that value for subsequent incremental
 scans. If the product already exists, provide its engagement ID instead of
 trying to create it again.
+
+A successful standard `--mode once` Git scan also creates this checkpoint. You
+can therefore run a normal full scan first and later switch to `--mode
+incremental` or create `--mode monitor-changes`; only commits after the compatible
+full scan are included. Custom Scope and ZIP scans are not used as Git
+checkpoints.
 
 Run a one-time Custom Scope scan with patterns supplied on the command line.
 Quote glob patterns so the local shell does not expand them:
